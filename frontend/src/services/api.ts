@@ -1,7 +1,13 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 
 // API Configuration
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+const envApiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+
+if (!envApiBaseUrl) {
+  throw new Error('VITE_API_BASE_URL is not defined. Please configure it in your frontend .env file.');
+}
+
+const API_BASE_URL = envApiBaseUrl.replace(/\/+$/, '');
 
 // Timeout configurations for different operations
 const TIMEOUTS = {

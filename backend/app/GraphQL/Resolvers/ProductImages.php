@@ -13,7 +13,13 @@ class ProductImages
             return $image->image_url || $image->image_path;
         });
 
-        // If no images, return empty array (GraphQL will handle this)
-        return $images->values();
+        // Transform to array format that GraphQL expects (url, label, role)
+        return $images->map(function ($image) {
+            return [
+                'url' => $image->url, // Uses accessor from ProductImage model
+                'label' => $image->label ?? null, // Uses accessor from ProductImage model
+                'role' => $image->role ?? null, // Uses accessor from ProductImage model
+            ];
+        })->values()->toArray();
     }
 }

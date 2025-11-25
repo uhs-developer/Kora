@@ -8,8 +8,10 @@ class AdminOrder
 {
     public function __invoke($_, array $args)
     {
-        return Order::with(['user', 'items', 'billingAddress', 'shippingAddress'])
+        $order = Order::with(['user', 'items.product.images'])
             ->findOrFail($args['id']);
+        
+        return $order;
     }
 }
 

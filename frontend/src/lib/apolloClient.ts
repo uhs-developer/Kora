@@ -9,8 +9,14 @@ import { onError } from '@apollo/client/link/error';
 
 // No hook re-exports; import hooks directly from '@apollo/client' where needed.
 
+const graphqlUrl = import.meta.env.VITE_GRAPHQL_URL;
+
+if (!graphqlUrl) {
+  throw new Error('VITE_GRAPHQL_URL is not defined. Please configure it in your frontend .env file.');
+}
+
 const httpLink = createHttpLink({
-  uri: 'http://localhost:8000/graphql',
+  uri: graphqlUrl,
 });
 
 const authLink = setContext((_, { headers }) => {

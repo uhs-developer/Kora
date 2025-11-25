@@ -299,6 +299,22 @@ export const GET_ADMIN_ORDER = gql`
       discountAmount
       grandTotal
       currency
+      items {
+        id
+        sku
+        name
+        quantity
+        price
+        rowTotal
+        product {
+          id
+          name
+          slug
+          images {
+            url
+          }
+        }
+      }
       createdAt
     }
   }

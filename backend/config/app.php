@@ -56,6 +56,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Frontend URL
+    |--------------------------------------------------------------------------
+    |
+    | This value stores the base URL for the storefront/frontend application.
+    | It should always be configured via the FRONTEND_URL environment variable
+    | so that backend logic (emails, redirects, etc.) never rely on hardcoded
+    | domains.
+    |
+    */
+
+    'frontend_url' => env('FRONTEND_URL'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Timezone
     |--------------------------------------------------------------------------
     |

@@ -5,42 +5,129 @@ namespace App\GraphQL\Mutations;
 use App\Models\Cart;
 use App\Models\CartItem;
 use App\Models\Product;
-use Illuminate\Support\Facades\Auth;
 
 class AddToCart
 {
-    public function __invoke($_, array $args)
+    public function __invoke($_, array $args, $context)
     {
-        $tenant = app('tenant');
-        $user = Auth::user();
-
-        // Get or create cart
-        $cart = Cart::where('tenant_id', $tenant->id)
-            ->where(function ($query) use ($user) {
-                if ($user) {
-                    $query->where('user_id', $user->id);
-                } else {
-                    $query->where('session_id', session()->getId());
-                }
-            })
-            ->whereNull('converted_at')
-            ->first();
-
-        if (!$cart) {
-            $cart = Cart::create([
-                'tenant_id' => $tenant->id,
-                'user_id' => $user?->id,
-                'session_id' => $user ? null : session()->getId(),
-                'currency' => 'USD',
-            ]);
+        // Get tenant - with fallback to default if not set
+        $tenant = app()->bound('tenant') ? app('tenant') : \App\Models\Tenant::where('slug', 'default')->first();
+        
+        if (!$tenant) {
+            throw new \Exception('Tenant not found. Please ensure a default tenant exists.');
+        }
+        
+        // Get authenticated user from context (set by AttemptAuthentication middleware)
+        $user = $context->user();
+        
+        // Get session ID for guest carts (from args or generate one)
+        $sessionId = $args['session_id'] ?? null;
+        
+        // If no user and no session_id, we can't create a cart
+        if (!$user && !$sessionId) {
+            throw new \Exception('Session ID is required for guest carts');
         }
 
-        // Get product
-        $product = Product::where('tenant_id', $tenant->id)
-            ->where('id', $args['product_id'])
-            ->where('is_active', true)
-            ->where('in_stock', true)
-            ->firstOrFail();
+        // If user is authenticated and has a session_id, merge guest cart with user cart
+        if ($user && $sessionId) {
+            $guestCart = Cart::where('tenant_id', $tenant->id)
+                ->where('session_id', $sessionId)
+                ->whereNull('user_id')
+                ->whereNull('converted_at')
+                ->with('items.product')
+                ->first();
+
+            $userCart = Cart::where('tenant_id', $tenant->id)
+                ->where('user_id', $user->id)
+                ->whereNull('converted_at')
+                ->with('items.product')
+                ->first();
+
+            // Merge guest cart into user cart if both exist
+            if ($guestCart && $guestCart->items->isNotEmpty()) {
+                if ($userCart) {
+                    // Merge items from guest cart into user cart
+                    foreach ($guestCart->items as $guestItem) {
+                        $existingItem = $userCart->items->firstWhere('product_id', $guestItem->product_id);
+                        if ($existingItem) {
+                            // Update quantity if same product
+                            $existingItem->quantity += $guestItem->quantity;
+                            $existingItem->row_total = $existingItem->price * $existingItem->quantity;
+                            $existingItem->save();
+                        } else {
+                            // Add new item - update cart_id
+                            $guestItem->cart_id = $userCart->id;
+                            $guestItem->save();
+                        }
+                    }
+                    // Delete guest cart
+                    $guestCart->delete();
+                    // Refresh user cart to get updated items
+                    $cart = $userCart->fresh(['items.product']);
+                } else {
+                    // Convert guest cart to user cart
+                    $guestCart->user_id = $user->id;
+                    $guestCart->session_id = null;
+                    $guestCart->save();
+                    $cart = $guestCart->fresh(['items.product']);
+                }
+            } else {
+                // Use or create user cart
+                if (!$userCart) {
+                    $cart = Cart::create([
+                        'tenant_id' => $tenant->id,
+                        'user_id' => $user->id,
+                        'currency' => 'USD',
+                    ]);
+                } else {
+                    $cart = $userCart;
+                }
+            }
+        } else {
+            // Get or create cart - use user_id if authenticated, otherwise use session_id
+            $cart = Cart::where('tenant_id', $tenant->id)
+                ->whereNull('converted_at')
+                ->where(function ($query) use ($user, $sessionId) {
+                    if ($user) {
+                        $query->where('user_id', $user->id);
+                    } else {
+                        $query->where('session_id', $sessionId)->whereNull('user_id');
+                    }
+                })
+                ->first();
+
+            if (!$cart) {
+                $cart = Cart::create([
+                    'tenant_id' => $tenant->id,
+                    'user_id' => $user?->id,
+                    'session_id' => $user ? null : $sessionId,
+                    'currency' => 'USD',
+                ]);
+            }
+        }
+
+        // Get product - check if it exists first
+        // Handle both products with tenant_id and without (for backward compatibility)
+        $product = Product::where('id', $args['product_id'])
+            ->where(function ($query) use ($tenant) {
+                $query->where('tenant_id', $tenant->id)
+                    ->orWhereNull('tenant_id'); // Allow products without tenant_id for backward compatibility
+            })
+            ->first();
+
+        if (!$product) {
+            throw new \Exception("Product with ID {$args['product_id']} not found");
+        }
+
+        // Check if product is active
+        if (!$product->is_active) {
+            throw new \Exception("Product '{$product->name}' is not active");
+        }
+
+        // Check if product is in stock
+        if (!$product->in_stock) {
+            throw new \Exception("Product '{$product->name}' is out of stock");
+        }
 
         // Check if item already exists in cart
         $cartItem = CartItem::where('cart_id', $cart->id)
@@ -50,6 +137,7 @@ class AddToCart
         if ($cartItem) {
             // Update quantity
             $cartItem->quantity += $args['quantity'];
+            $cartItem->row_total = $cartItem->price * $cartItem->quantity;
             $cartItem->save();
         } else {
             // Add new item
@@ -65,10 +153,12 @@ class AddToCart
             ]);
         }
 
-        // Recalculate cart totals
+        // Recalculate cart totals - refresh items to get latest data
+        $cart->refresh();
         $cart->load('items');
         $cart->calculateTotals();
 
+        // Return cart with items and product relationships loaded
         return $cart->load('items.product');
     }
 }

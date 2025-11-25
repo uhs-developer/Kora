@@ -34,6 +34,9 @@ return [
             // Always set the `Accept: application/json` header.
             Nuwave\Lighthouse\Http\Middleware\AcceptJson::class,
 
+            // Resolve tenant before processing GraphQL requests
+            \App\Http\Middleware\TenantResolver::class,
+
             // Logs in a user if they are authenticated. In contrast to Laravel's 'auth'
             // middleware, this delegates auth and permission checks to the field level.
             Nuwave\Lighthouse\Http\Middleware\AttemptAuthentication::class,
@@ -61,7 +64,7 @@ return [
     |
     */
 
-    'guards' => null,
+    'guards' => ['sanctum'],
 
     /*
     |--------------------------------------------------------------------------

@@ -130,7 +130,8 @@ extend type Mutation {
   # ===== Customer CRUD =====
   createCustomer(input: CreateCustomerInput!): AdminCustomer!  updateCustomer(id: ID!, input: UpdateCustomerInput!): AdminCustomer!  deleteCustomer(id: ID!): Boolean!
   # ===== Order Management =====
-  updateOrderStatus(id: ID!, status: String!): AdminOrder!  cancelOrder(id: ID!, reason: String): AdminOrder!
+  updateOrderStatus(id: ID!, status: String!): AdminOrder! @guard @field(resolver: "App\\GraphQL\\Mutations\\UpdateOrderStatus")
+  cancelOrder(id: ID!, reason: String): AdminOrder! @guard @field(resolver: "App\\GraphQL\\Mutations\\CancelOrder")
   # ===== Shipment Management =====
   createShipment(input: CreateShipmentInput!): AdminShipment!  updateShipment(id: ID!, input: UpdateShipmentInput!): AdminShipment!
   # ===== Invoice Management =====
@@ -177,6 +178,7 @@ type AdminProduct {
   isActive: Boolean
   isFeatured: Boolean
   primaryImage: String
+  images: [AdminMedia!]! @field(resolver: "App\\GraphQL\\Resolvers\\ProductImages")
   category: AdminCategory
   categories: [AdminCategory!]!
   subcategories: [AdminCategory!]!
@@ -201,6 +203,12 @@ type AdminProduct {
 type AdminProductConnection {
   data: [AdminProduct!]!
   paginatorInfo: PaginatorInfo!
+}
+
+type AdminMedia {
+  url: String!
+  label: String
+  role: String
 }
 
 type AdminCategory {
@@ -269,7 +277,18 @@ type AdminOrder {
   discountAmount: Float! @rename(attribute: "discount_amount")
   grandTotal: Float! @rename(attribute: "grand_total")
   currency: String!
+  items: [AdminOrderItem!]! @hasMany
   createdAt: DateTime! @rename(attribute: "created_at")
+}
+
+type AdminOrderItem {
+  id: ID!
+  sku: String!
+  name: String!
+  quantity: Int!
+  price: Float!
+  rowTotal: Float! @rename(attribute: "row_total")
+  product: AdminProduct @belongsTo
 }
 
 type AdminOrderConnection {

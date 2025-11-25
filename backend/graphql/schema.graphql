@@ -76,10 +76,11 @@ extend type Query {
     inStock: Boolean
   ): ProductFilters! @field(resolver: "App\\GraphQL\\Queries\\ProductFilters")
 
-  cart: Cart! @field(resolver: "App\\GraphQL\\Queries\\GetCart")
+  cart(session_id: String): Cart! @field(resolver: "App\\GraphQL\\Queries\\GetCart")
 
   me: Customer @guard @field(resolver: "App\\GraphQL\\Queries\\Me")
-  myOrders(page: Int = 1, perPage: Int = 20): OrderConnection @guard
+  myOrders(page: Int = 1, perPage: Int = 20): OrderConnection @guard @field(resolver: "App\\GraphQL\\Queries\\MyOrders")
+  myOrder(order_number: String!): Order @guard @field(resolver: "App\\GraphQL\\Queries\\MyOrder")
 }
 
 type Mutation {
@@ -87,9 +88,9 @@ type Mutation {
   register(name: String!, email: String!, password: String!): AuthPayload @field(resolver: "App\\GraphQL\\Mutations\\Register")
   logout: Boolean @guard @field(resolver: "App\\GraphQL\\Mutations\\Logout")
 
-  addToCart(product_id: ID!, quantity: Int!, custom_options: String): Cart! @field(resolver: "App\\GraphQL\\Mutations\\AddToCart")
-  updateCartItem(cart_item_id: ID!, quantity: Int!): Cart! @field(resolver: "App\\GraphQL\\Mutations\\UpdateCartItem")
-  removeCartItem(cart_item_id: ID!): Cart! @field(resolver: "App\\GraphQL\\Mutations\\RemoveCartItem")
+  addToCart(product_id: ID!, quantity: Int!, custom_options: String, session_id: String): Cart! @field(resolver: "App\\GraphQL\\Mutations\\AddToCart")
+  updateCartItem(cart_item_id: ID!, quantity: Int!, session_id: String): Cart! @field(resolver: "App\\GraphQL\\Mutations\\UpdateCartItem")
+  removeCartItem(cart_item_id: ID!, session_id: String): Cart! @field(resolver: "App\\GraphQL\\Mutations\\RemoveCartItem")
 
   placeOrder(
     payment_method: String!
@@ -98,6 +99,18 @@ type Mutation {
     shipping_address: AddressInput!
     customer_note: String
   ): Order! @guard @field(resolver: "App\\GraphQL\\Mutations\\PlaceOrder")
+
+  initializePayment(
+    order_number: String!
+    payment_method: String
+    customer_phone: String
+    mobile_number: String
+    encrypted_card_number: String
+    encrypted_expiry_month: String
+    encrypted_expiry_year: String
+    encrypted_cvv: String
+    nonce: String
+  ): PaymentInitResponse! @guard @field(resolver: "App\\GraphQL\\Mutations\\InitializePayment")
 }
 
 type Product {
@@ -266,4 +279,13 @@ type AvailableFilters {
 type PriceRange {
   min: Float!
   max: Float!
+}
+
+type PaymentInitResponse {
+  payment_url: String  # May be null for push notification flow
+  transaction_id: String
+  charge_id: String
+  status: String
+  next_action: String  # JSON string with next_action details
+  order_number: String!
 }
