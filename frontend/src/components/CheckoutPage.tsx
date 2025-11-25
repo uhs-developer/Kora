@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { useMutation } from "urql";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -21,20 +23,30 @@ import { CartItem } from "./ShoppingCart";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../contexts/AuthContext";
+import { useCart } from "../contexts/CartContext";
 import { toast } from "sonner";
 import { isSandboxPayment } from "../config/paymentConfig";
+import { PLACE_ORDER, INITIALIZE_PAYMENT } from "../graphql/storefront";
+import { encryptCardDetails } from "../utils/flutterwaveEncryption";
+import { getErrorMessage } from "../utils/errorHandler";
 
 interface CheckoutPageProps {
   items: CartItem[];
   onBack: () => void;
-  onPlaceOrder: (orderData: any) => void;
+  onPlaceOrder?: (orderData: any) => void;
 }
 
 export function CheckoutPage({ items, onBack, onPlaceOrder }: CheckoutPageProps) {
   const { t } = useTranslation();
   const { user, isAuthenticated } = useAuth();
+  const { cart, refreshCart } = useCart();
+  const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // GraphQL mutations
+  const [, placeOrderMutation] = useMutation(PLACE_ORDER);
+  const [, initializePaymentMutation] = useMutation(INITIALIZE_PAYMENT);
   const [formData, setFormData] = useState({
     // Shipping Information
     firstName: "",
@@ -81,16 +93,18 @@ export function CheckoutPage({ items, onBack, onPlaceOrder }: CheckoutPageProps)
     }));
   }, [isAuthenticated, user]);
 
-  const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const shipping = subtotal > 500 ? 0 : 50;
-  const tax = subtotal * 0.05;
-  const total = subtotal + shipping + tax;
+  // Use cart totals from GraphQL if available, otherwise calculate from items
+  const subtotal = cart?.subtotal || items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const shipping = cart?.shipping_amount || (subtotal > 500 ? 0 : 50);
+  const tax = cart?.tax_amount || subtotal * 0.05;
+  const discount = cart?.discount_amount || 0;
+  const total = cart?.grand_total || (subtotal + shipping + tax - discount);
 
   const handleInputChange = (field: string, value: string | boolean) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (isSubmitting) return;
 
     if (!formData.agreeTerms) {
@@ -98,29 +112,287 @@ export function CheckoutPage({ items, onBack, onPlaceOrder }: CheckoutPageProps)
       return;
     }
 
+    // Validate required fields
+    if (!formData.firstName || !formData.lastName || !formData.email || !formData.phone || 
+        !formData.address || !formData.city || !formData.district) {
+      toast.error("Please fill in all required shipping information");
+      return;
+    }
+
+    if (!cart || cart.items.length === 0) {
+      toast.error("Your cart is empty");
+      return;
+    }
+
     try {
       setIsSubmitting(true);
 
-      const orderData = {
+      // Format addresses according to AddressInput type
+      const billingAddress = {
+        first_name: formData.firstName,
+        last_name: formData.lastName,
+        company: "",
+        street_address: formData.address,
+        street_address_2: "",
+        city: formData.city,
+        state_province: formData.district,
+        postal_code: formData.postalCode || "",
+        country: "RW", // Rwanda
+        phone: formData.phone,
+      };
+
+      const shippingAddress = {
+        ...billingAddress,
+        // Could be different if differentBilling is true, but for now use same
+      };
+
+      // Determine payment method for GraphQL
+      let paymentMethod = "cash_on_delivery"; // Default
+      if (formData.paymentMethod === "card") {
+        paymentMethod = "credit_card";
+      } else if (formData.paymentMethod === "mobile") {
+        paymentMethod = formData.mobileProvider === "mtn" ? "mtn_momo" : "airtel_money";
+      } else if (formData.paymentMethod === "bank") {
+        paymentMethod = "bank_transfer";
+      }
+
+      // Call GraphQL mutation
+      const result = await placeOrderMutation({
+        payment_method: paymentMethod,
+        shipping_method: "standard", // TODO: Get from cart or user selection
+        billing_address: billingAddress,
+        shipping_address: shippingAddress,
+        customer_note: formData.agreeTerms ? "Order placed via checkout" : null,
+      });
+
+      if (result.error) {
+        const errorMessage = getErrorMessage(result.error);
+        throw new Error(errorMessage);
+      }
+
+      if (result.data?.placeOrder) {
+        const order = result.data.placeOrder;
+        
+        // Refresh cart to clear it
+        refreshCart();
+        
+        // Initialize payment if payment method requires it (not cash on delivery)
+        if (paymentMethod !== 'cash_on_delivery' && paymentMethod !== 'bank_transfer') {
+          try {
+            // For card payments, we need encrypted card details
+            // TODO: Implement card encryption before sending
+            let encryptedCardData: {
+              encrypted_card_number: string;
+              encrypted_expiry_month: string;
+              encrypted_expiry_year: string;
+              encrypted_cvv: string;
+              nonce: string;
+            } | null = null;
+            
+            if (paymentMethod === 'credit_card' && formData.paymentMethod === 'card') {
+              // Card details need to be encrypted on frontend
+              if (formData.cardNumber && formData.expiryDate && formData.cvv) {
+                try {
+                  const encryptionKey = import.meta.env.VITE_FLUTTERWAVE_ENCRYPTION_KEY;
+                  if (!encryptionKey) {
+                    toast.error('Flutterwave encryption key not configured. Please contact support.');
+                    setIsSubmitting(false);
+                    return;
+                  }
+                  
+                  // Parse expiry date (format: MM/YY or MM/YYYY)
+                  const expiryParts = formData.expiryDate.split('/').map(part => part.trim());
+                  if (expiryParts.length !== 2) {
+                    toast.error('Invalid expiry date format. Please use MM/YY or MM/YYYY');
+                    setIsSubmitting(false);
+                    return;
+                  }
+                  
+                  const [expiryMonth, expiryYear] = expiryParts;
+                  
+                  // Encrypt card details
+                  encryptedCardData = await encryptCardDetails(
+                    formData.cardNumber,
+                    expiryMonth,
+                    expiryYear,
+                    formData.cvv,
+                    encryptionKey
+                  );
+                } catch (encryptionError: any) {
+                  console.error('Card encryption error:', encryptionError);
+                  const errorMessage = getErrorMessage(encryptionError);
+                  toast.error(errorMessage || 'Failed to encrypt card details. Please check your card information and try again.');
+                  setIsSubmitting(false);
+                  return;
+                }
+              } else {
+                toast.error('Please fill in all card details');
+                setIsSubmitting(false);
+                return;
+              }
+            }
+            
+            const paymentResult = await initializePaymentMutation({
+              order_number: order.order_number,
+              payment_method: paymentMethod,
+              customer_phone: formData.phone,
+              mobile_number: formData.paymentMethod === 'mobile' ? formData.mobileNumber : null,
+              // Card encryption fields (will be null for mobile money)
+              encrypted_card_number: encryptedCardData?.encrypted_card_number || null,
+              encrypted_expiry_month: encryptedCardData?.encrypted_expiry_month || null,
+              encrypted_expiry_year: encryptedCardData?.encrypted_expiry_year || null,
+              encrypted_cvv: encryptedCardData?.encrypted_cvv || null,
+              nonce: encryptedCardData?.nonce || null,
+            });
+
+            if (paymentResult.error) {
+              const errorMessage = getErrorMessage(paymentResult.error);
+              throw new Error(errorMessage);
+            }
+
+            const paymentInit = paymentResult.data?.initializePayment;
+            
+            // Step 4: Handle payment response based on payment method and next_action
+            // For card payments, we MUST wait for 3DS redirect - don't show success yet
+            if (paymentInit?.payment_url) {
+              // Card payment with 3DS redirect flow (Step 4.2)
+              toast.info('Redirecting to payment gateway for authentication...', {
+                duration: 3000,
+              });
+              // IMPORTANT: Redirect immediately - don't navigate to thank you page
+              // The callback will redirect to thank you page after 3DS authentication
+              window.location.href = paymentInit.payment_url;
+              setIsSubmitting(false);
+              return; // Exit early - don't continue to thank you page
+            } else if (paymentInit?.status === 'pending' && paymentInit?.next_action) {
+              // Mobile Money push notification flow (Step 4.2-4.3)
+              try {
+                const nextAction = JSON.parse(paymentInit.next_action);
+                
+                if (nextAction.type === 'payment_instruction') {
+                  // Step 4.2: Flutterwave sent MoMo push to user's phone
+                  const instruction = nextAction.payment_instruction?.note || 
+                    `Please authorize the payment on your ${formData.paymentMethod === 'mtn_momo' ? 'MTN' : 'Airtel'} mobile money account. Check your phone for a payment prompt.`;
+                  
+                  toast.info(instruction, {
+                    duration: 8000, // Show longer for important instruction
+                  });
+                  
+                  // Store payment info for thank you page
+                  sessionStorage.setItem('pending_payment', JSON.stringify({
+                    order_number: order.order_number,
+                    charge_id: paymentInit.charge_id,
+                    payment_method: formData.paymentMethod,
+                    instruction: instruction,
+                  }));
+                } else {
+                  toast.info('Payment initiated. Please check your mobile device to authorize the payment.', {
+                    duration: 6000,
+                  });
+                }
+              } catch (e) {
+                // If parsing fails, show generic message
+                toast.info('Payment initiated. Please check your mobile device to authorize the payment.', {
+                  duration: 6000,
+                });
+              }
+              // Step 4.4: Continue to thank you page - payment will be confirmed via webhook (Step 5-6)
+              // Continue to navigation below
+            } else if (paymentInit?.status === 'succeeded' || paymentInit?.status === 'successful') {
+              // Payment already succeeded (rare - might happen in testing or if no 3DS required)
+              // Only show success if it's NOT a card payment (card payments should always redirect)
+              if (paymentMethod !== 'credit_card' && paymentMethod !== 'card' && paymentMethod !== 'debit_card') {
+                toast.success('Payment successful!');
+                // Continue to navigation below
+              } else {
+                // For card payments, even if status is succeeded, navigate to thank you with processing status
+                // This might be a testing scenario
+                console.warn('Card payment returned success without redirect - navigating to thank you page', paymentInit);
+                toast.info('Payment processing... Redirecting to order confirmation.');
+                // Store as pending payment so thank you page shows processing state
+                sessionStorage.setItem('pending_payment', JSON.stringify({
+                  order_number: order.order_number,
+                  charge_id: paymentInit.charge_id,
+                  payment_method: paymentMethod,
+                  instruction: 'Payment is being processed. Please wait for confirmation.',
+                }));
+                // Continue to navigation below - will show processing state on thank you page
+              }
+            } else {
+              // Payment initiated but status unknown or pending
+              // For card payments without payment_url, navigate to thank you with processing status
+              if (paymentMethod === 'credit_card' || paymentMethod === 'card' || paymentMethod === 'debit_card') {
+                console.warn('Card payment initialized but no payment_url returned - navigating to thank you page', paymentInit);
+                toast.info('Payment processing... Redirecting to order confirmation.');
+                // Store as pending payment so thank you page shows processing state
+                sessionStorage.setItem('pending_payment', JSON.stringify({
+                  order_number: order.order_number,
+                  charge_id: paymentInit.charge_id,
+                  payment_method: paymentMethod,
+                  instruction: 'Payment is being processed. Please wait for confirmation from the payment gateway.',
+                }));
+                // Continue to navigation below - will show processing state on thank you page
+              } else {
+                toast.success('Payment initiated successfully.');
+                // Continue to navigation below
+              }
+            }
+          } catch (paymentError: any) {
+            console.error('Payment initialization error:', paymentError);
+            const errorMessage = getErrorMessage(paymentError);
+            toast.error(errorMessage || 'Payment initialization failed. Your order has been created but payment was not processed. You can retry payment from your order history.');
+            // Continue to thank you page even if payment initialization fails
+          }
+        }
+        
+        // Only navigate to thank you page if:
+        // 1. Payment method is NOT card (cash on delivery, bank transfer, etc.)
+        // 2. Mobile money (which shows pending view)
+        // 3. Payment initialization failed (so user can retry)
+        // For card payments with 3DS, we should have already redirected above
+        
+        // Call legacy callback if provided
+        if (onPlaceOrder) {
+          onPlaceOrder({
+            order,
         items,
         shipping: formData,
         payment: {
           method: formData.paymentMethod,
-          ...(formData.paymentMethod === 'card'
-            ? {
-                cardNumber: formData.cardNumber,
-                cardName: formData.cardName,
-              }
-            : {
-                mobileNumber: formData.mobileNumber,
-                provider: formData.mobileProvider,
-              }),
         },
         totals: { subtotal, shipping, tax, total },
         timestamp: new Date(),
-      };
-
-      onPlaceOrder(orderData);
+          });
+        }
+        
+        // Navigate to thank you page (for cash on delivery, bank transfer, mobile money, or if payment init failed)
+        // NOTE: Card payments with 3DS should have already redirected above
+        navigate('/thank-you', { 
+          state: { orderData: {
+            ...order,
+            items: order.items.map((item: any) => ({
+              ...item,
+              image: item.product?.images?.[0]?.url || '',
+              name: item.name || item.product?.name,
+              price: item.price,
+              quantity: item.quantity,
+            })),
+            shipping: {
+              email: formData.email,
+              city: formData.city,
+              district: formData.district,
+            },
+            totals: {
+              total: order.grand_total,
+            },
+          }} 
+        });
+        
+        toast.success(`Order ${order.order_number} placed successfully!`);
+      }
+    } catch (error: any) {
+      console.error('Place order error:', error);
+      toast.error(error.message || "Failed to place order. Please try again.");
     } finally {
       setIsSubmitting(false);
     }

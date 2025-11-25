@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { useState, useEffect } from "react";
 import { AuthProvider } from "../contexts/AuthContext";
 import { ProductProvider, useProducts } from "../contexts/ProductContext";
+import { CartProvider, useCart, CartItem as GraphQLCartItem } from "../contexts/CartContext";
 import ProtectedRoute from "../components/ProtectedRoute";
 import { AdminRoute } from "../components/ProtectedRoute";
 import { HeaderDynamic } from "../components/HeaderDynamic";
@@ -58,6 +59,7 @@ import AdminCustomersPage from "../admin/pages/AdminCustomersPage";
 import AdminCustomersPageGraphQL from "../admin/pages/AdminCustomersPageGraphQL";
 import AdminOrdersPage from "../admin/pages/AdminOrdersPage";
 import AdminOrdersPageGraphQL from "../admin/pages/AdminOrdersPageGraphQL";
+import AdminOrderDetailPage from "../admin/pages/AdminOrderDetailPage";
 import AdminProductFormPage from "../admin/pages/AdminProductFormPage";
 import AdminInvoicesPage from "../admin/pages/AdminInvoicesPage";
 import AdminShipmentsPage from "../admin/pages/AdminShipmentsPage";
@@ -76,7 +78,9 @@ export function AppRouter() {
     <Router>
       <AuthProvider>
         <ProductProvider>
-          <AppRouterContent />
+          <CartProvider>
+            <AppRouterContent />
+          </CartProvider>
         </ProductProvider>
       </AuthProvider>
     </Router>
@@ -85,8 +89,8 @@ export function AppRouter() {
 
 function AppRouterContent() {
   const { user, logout, isAuthenticated } = useAuth();
+  const { cart, addToCart: addToCartGraphQL, updateCartItem, removeCartItem, getCartItemCount, refreshCart } = useCart();
   const navigate = useNavigate();
-  const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [wishlistItems, setWishlistItems] = useState<WishlistItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isWishlistOpen, setIsWishlistOpen] = useState(false);
@@ -96,18 +100,21 @@ function AppRouterContent() {
 
   const isOnline = useOnlineStatus();
 
-  // Load data from localStorage on mount
-  useEffect(() => {
-    // Load cart
-    const savedCart = localStorage.getItem('rwanda-dubai-cart');
-    if (savedCart) {
-      try {
-        setCartItems(JSON.parse(savedCart));
-      } catch (error) {
-        console.error('Failed to load cart from localStorage:', error);
-      }
-    }
+  // Convert GraphQL cart items to old CartItem format for backward compatibility
+  const cartItems: CartItem[] = cart?.items.map(item => ({
+    id: item.product.id,
+    name: item.product.name,
+    slug: item.product.slug,
+    price: item.product.specialPrice || item.product.price,
+    image: item.product.images[0]?.url || '',
+    brand: item.product.brand?.name || '',
+    category: item.product.categories?.[0]?.name || '',
+    description: '',
+    quantity: item.quantity,
+  })) || [];
 
+  // Load wishlist from localStorage on mount
+  useEffect(() => {
     // Load wishlist
     setWishlistItems(getWishlistFromStorage());
 
@@ -117,11 +124,6 @@ function AppRouterContent() {
       setShowFlashSale(true);
     }
   }, []);
-
-  // Save cart to localStorage whenever it changes
-  useEffect(() => {
-    localStorage.setItem('rwanda-dubai-cart', JSON.stringify(cartItems));
-  }, [cartItems]);
 
   // Handle offline status changes
   useEffect(() => {
@@ -134,37 +136,46 @@ function AppRouterContent() {
     }
   }, [isOnline, showOfflinePage]);
 
-  const addToCart = (product: Product, quantity = 1) => {
-    setCartItems(prevItems => {
-      const existingItem = prevItems.find(item => item.id === product.id);
-      if (existingItem) {
-        return prevItems.map(item =>
-          item.id === product.id
-            ? { ...item, quantity: item.quantity + quantity }
-            : item
-        );
+  const addToCart = async (product: Product, quantity = 1) => {
+    try {
+      // Find the GraphQL cart item ID for this product
+      const existingCartItem = cart?.items.find(item => item.product.id === product.id);
+      
+      if (existingCartItem) {
+        // Update quantity if item already exists
+        await updateCartQuantity(product.id, existingCartItem.quantity + quantity);
+      } else {
+        // Add new item via GraphQL
+        await addToCartGraphQL(product.id, quantity);
       }
-      return [...prevItems, { ...product, quantity }];
-    });
-    toast.success(`${product.name} added to cart!`);
-  };
-
-  const removeFromCart = (productId: string) => {
-    setCartItems(prevItems => prevItems.filter(item => item.id !== productId));
-    toast.success('Item removed from cart');
-  };
-
-  const updateCartQuantity = (productId: string, quantity: number) => {
-    if (quantity <= 0) {
-      removeFromCart(productId);
-      return;
+    } catch (error) {
+      console.error('Failed to add to cart:', error);
+      // Error toast is handled in CartContext
     }
+  };
 
-    setCartItems(prevItems =>
-      prevItems.map(item =>
-        item.id === productId ? { ...item, quantity } : item
-      )
-    );
+  const removeFromCart = async (productId: string) => {
+    try {
+      // Find the GraphQL cart item ID
+      const cartItem = cart?.items.find(item => item.product.id === productId);
+      if (cartItem) {
+        await removeCartItem(cartItem.id);
+      }
+    } catch (error) {
+      console.error('Failed to remove from cart:', error);
+    }
+  };
+
+  const updateCartQuantity = async (productId: string, quantity: number) => {
+    try {
+      // Find the GraphQL cart item ID
+      const cartItem = cart?.items.find(item => item.product.id === productId);
+      if (cartItem) {
+        await updateCartItem(cartItem.id, quantity);
+      }
+    } catch (error) {
+      console.error('Failed to update cart quantity:', error);
+    }
   };
 
   const addToWishlist = (product: Product) => {
@@ -201,7 +212,7 @@ function AppRouterContent() {
   };
 
   const handleCheckout = () => {
-    if (cartItems.length === 0) {
+    if (!cart || cart.items.length === 0) {
       toast.error('Your cart is empty');
       return;
     }
@@ -218,7 +229,8 @@ function AppRouterContent() {
 
   const handlePlaceOrder = (orderData: any) => {
     setOrderData(orderData);
-    setCartItems([]); // Clear cart
+    // Clear cart via GraphQL refresh
+    refreshCart();
     toast.success('Order placed successfully!');
   };
 
@@ -258,7 +270,7 @@ function AppRouterContent() {
     setShowOfflinePage(false);
   };
 
-  const cartItemCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+  const cartItemCount = getCartItemCount();
   const wishlistItemCount = wishlistItems.length;
 
   // Get related products for product detail page
@@ -384,6 +396,16 @@ function AppRouterContent() {
                 <AdminRoute>
                   <AdminLayout title="Orders">
                     <AdminOrdersPageGraphQL />
+                  </AdminLayout>
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="/admin/orders/:id"
+              element={
+                <AdminRoute>
+                  <AdminLayout title="Order Details">
+                    <AdminOrderDetailPage />
                   </AdminLayout>
                 </AdminRoute>
               }
@@ -594,10 +616,8 @@ function AppRouterContent() {
             } />
 
             <Route path="/thank-you" element={
-              <ThankYouPage
+              <ThankYouPageWrapper
                 orderData={orderData}
-                onContinueShopping={() => { }}
-                onTrackOrder={() => toast.info('Order tracking feature coming soon!')}
               />
             } />
 
@@ -1035,6 +1055,17 @@ function AccountDashboardWrapper({ user, onLogout }: any) {
         }
       }}
       onLogout={onLogout}
+    />
+  );
+}
+
+function ThankYouPageWrapper({ orderData }: { orderData?: any }) {
+  const navigate = useNavigate();
+  return (
+    <ThankYouPage
+      orderData={orderData}
+      onContinueShopping={() => navigate('/')}
+      onTrackOrder={() => navigate('/orders')}
     />
   );
 }

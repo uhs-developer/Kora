@@ -20,6 +20,16 @@ const GET_ADMIN_CATEGORIES_SIMPLE = gql`
   }
 `;
 
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+
+if (!apiBaseUrl) {
+  throw new Error('VITE_API_BASE_URL is not defined. Please configure it in your frontend .env file.');
+}
+
+const backendBaseUrl = apiBaseUrl
+  .replace(/\/api\/?$/, '')
+  .replace(/\/+$/, '');
+
 export default function AdminProductsPageGraphQL() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
@@ -82,9 +92,15 @@ export default function AdminProductsPageGraphQL() {
 
   const getProductImageUrl = (product: any) => {
     if (product.primaryImage) {
-      return product.primaryImage.startsWith('http')
+      if (product.primaryImage.startsWith('http')) {
+        return product.primaryImage;
+      }
+
+      const normalizedPath = product.primaryImage.startsWith('/')
         ? product.primaryImage
-        : `http://localhost:8000${product.primaryImage}`;
+        : `/${product.primaryImage}`;
+
+      return `${backendBaseUrl}${normalizedPath}`;
     }
     return 'https://via.placeholder.com/100';
   };

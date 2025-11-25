@@ -48,6 +48,9 @@ Route::prefix('brands')->group(function () {
     Route::get('/{slug}', [BrandController::class, 'show']);
 });
 
+// ===== PAYMENT WEBHOOKS =====
+Route::post('/webhooks/flutterwave', [\App\Http\Controllers\FlutterwaveWebhookController::class, 'handleWebhook']);
+
 /*
 |--------------------------------------------------------------------------
 | ADMIN OPERATIONS - Use GraphQL at /graphql

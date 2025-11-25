@@ -71,14 +71,21 @@ class Cart extends Model
      */
     public function calculateTotals(): void
     {
-        $subtotal = $this->items->sum('row_total');
-        $taxAmount = $this->items->sum('tax_amount');
-        $discountAmount = $this->items->sum('discount_amount');
+        // Refresh items relationship to ensure we have the latest items
+        $this->load('items');
+        
+        // Get items collection
+        $items = $this->items;
+
+        $subtotal = $items ? $items->sum('row_total') : 0;
+        $taxAmount = $items ? $items->sum('tax_amount') : 0;
+        $discountAmount = $items ? $items->sum('discount_amount') : 0;
+        $shippingAmount = $this->shipping_amount ?? 0;
 
         $this->subtotal = $subtotal;
         $this->tax_amount = $taxAmount;
         $this->discount_amount = $discountAmount;
-        $this->grand_total = $subtotal + $taxAmount + $this->shipping_amount - $discountAmount;
+        $this->grand_total = $subtotal + $taxAmount + $shippingAmount - $discountAmount;
 
         $this->save();
     }

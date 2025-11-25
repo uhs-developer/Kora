@@ -1,10 +1,16 @@
 import { createClient, fetchExchange } from 'urql';
-import { authExchange } from '@urql/exchange-auth';
+
+const graphqlUrl = import.meta.env.VITE_GRAPHQL_URL;
+
+if (!graphqlUrl) {
+  throw new Error('VITE_GRAPHQL_URL is not defined. Please configure it in your frontend .env file.');
+}
 
 export const graphqlClient = createClient({
-  url: 'http://localhost:8000/graphql',
+  url: graphqlUrl,
   fetchOptions: () => {
-    const token = localStorage.getItem('auth_token');
+    // Check both token keys for backward compatibility
+    const token = localStorage.getItem('rwanda-dubai-token') || localStorage.getItem('auth_token');
     return {
       method: 'POST',
       headers: {
